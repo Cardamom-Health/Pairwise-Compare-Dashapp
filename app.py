@@ -518,26 +518,33 @@ def display_similarity(selected_rows, table_data, compare_cols):
         shared = row.get(shared_col, "")  
         unique_1 = row.get(unique1_col, "")  
         unique_2 = row.get(unique2_col, "")  
+    
         def to_list(s):  
             if pd.isnull(s) or not s: return []  
             items = []  
             for part in s.split(';'):  
                 items.extend(x.strip() for x in part.split(','))  
             return [x for x in items if x]  
+        
+        shared_list = to_list(shared)  
+        uniq1_list = to_list(unique_1)  
+        uniq2_list = to_list(unique_2)  
+        
+        # >>> Here is where we add counts!  
         cards.append(html.Div([  
             html.H4(f"Comparison for '{col}'"),  
             html.Div([  
                 html.Div([  
-                    html.H5("Shared"),  
-                    html.Ul([html.Li(x) for x in to_list(shared)] or ["None"])  
+                    html.H5(f"Shared (n = {len(shared_list)})"),  
+                    html.Ul([html.Li(x) for x in shared_list] or ["None"])  
                 ], style={'width': '30%', 'display': 'inline-block', 'verticalAlign': 'top', 'backgroundColor': '#D6F5D6', 'padding': '10px', 'margin': '10px'}),  
                 html.Div([  
-                    html.H5(f"Unique to {name1}"),  
-                    html.Ul([html.Li(x) for x in to_list(unique_1)] or ["None"])  
+                    html.H5(f"Unique to {name1} (n = {len(uniq1_list)})"),  
+                    html.Ul([html.Li(x) for x in uniq1_list] or ["None"])  
                 ], style={'width': '30%', 'display': 'inline-block', 'verticalAlign': 'top', 'backgroundColor': '#FFFACD', 'padding': '10px', 'margin': '10px'}),  
                 html.Div([  
-                    html.H5(f"Unique to {name2}"),  
-                    html.Ul([html.Li(x) for x in to_list(unique_2)] or ["None"])  
+                    html.H5(f"Unique to {name2} (n = {len(uniq2_list)})"),  
+                    html.Ul([html.Li(x) for x in uniq2_list] or ["None"])  
                 ], style={'width': '30%', 'display': 'inline-block', 'verticalAlign': 'top', 'backgroundColor': '#FFD9EC', 'padding': '10px', 'margin': '10px'}),  
             ], style={'display': 'flex', 'justifyContent': 'space-around'})  
         ], style={'marginTop': 30, 'marginBottom': 30}))  
