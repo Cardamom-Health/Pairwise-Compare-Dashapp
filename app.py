@@ -3,6 +3,9 @@ from dash import dcc, html, Input, Output, State, dash_table
 import pandas as pd  
 import io, base64  
 import dash_bootstrap_components as dbc  
+from openpyxl import Workbook, load_workbook  
+from openpyxl.styles import PatternFill, Font  
+from itertools import combinations, permutations
   
 def parse_contents(contents, filename):  
     content_type, content_string = contents.split(',')  
@@ -26,6 +29,12 @@ server = app.server
   
 app.layout = html.Div([  
     html.H2("Pairwise Record Comparison"),  
+    html.Div([  
+        html.Button('(Optional) Generate Pairwise Table from List of IDs', id='gen-pairs-btn', n_clicks=0),  
+        html.Div(id='upload-list-div', style={'marginTop':10}),  
+        dcc.Download(id='download-pairs-table'),  
+    ]),  
+    html.Hr(style={'marginTop':20}), 
     html.Div([  
         html.Div([  
             html.H5("Upload Pairwise Table (with two IDs per row)"),  
@@ -67,6 +76,11 @@ app.layout = html.Div([
     html.Div(id="display-column-selector"),  
     html.Button("Show Merged Table", id='show-btn', n_clicks=0, style={'marginTop': '10px'}),  
     html.Hr(),  
+    html.Div([  
+        html.Button("Export to Excel", id='export-btn', n_clicks=0, style={'marginRight': '10px'}),  
+        dcc.Download(id="download-xlsx")  
+    ]),  
+    html.Br(), 
     # Always-present DataTable  
     dash_table.DataTable(  
         id='main-table',  
@@ -74,14 +88,66 @@ app.layout = html.Div([
         columns=[],  
         page_size=10,  
         row_selectable='single',  
+        sort_action='native',      # Enable sorting  
+        filter_action='native',    # Enable filtering  
         selected_rows=[],  
         style_table={'overflowX': 'auto'},  
         style_cell={'minWidth':'120px', 'whiteSpace':'normal'},  
         style_header={'backgroundColor':'#f4f4f4', 'fontWeight':700},  
     ),  
+    html.Br(), 
     html.Div(id='comparison-card')  
 ])  
+
+@app.callback(  
+    Output('upload-list-div', 'children'),  
+    Input('gen-pairs-btn', 'n_clicks')  
+)  
+def show_list_upload(n_clicks):  
+    if n_clicks == 0:  
+        return ""  
+    return html.Div([  
+        html.H5("Upload list of IDs (CSV or Excel; single column named 'ID' or similar)"),  
+        dcc.Upload(id='upload-id-list', children=html.Button('Upload ID List'), multiple=False),  
+        html.Div(id='id-list-uploaded', style={'marginBottom':10,'color':'green'}),  
+        html.Button('Download All Pairwise Comparisons', id='download-pairs-btn', n_clicks=0, style={'marginTop':10})  
+    ])  
   
+@app.callback(  
+    Output('id-list-uploaded', 'children'),  
+    Input('upload-id-list', 'filename')  
+)  
+def show_id_list_filename(filename):  
+    return f"File uploaded: {filename}" if filename else ""  
+  
+@app.callback(  
+    Output('download-pairs-table', 'data'),  
+    Input('download-pairs-btn', 'n_clicks'),  
+    State('upload-id-list', 'contents'),  
+    State('upload-id-list', 'filename'),  
+    prevent_initial_call=True  
+)  
+def make_pairs(n_clicks, contents, filename):  
+    if not n_clicks or not contents or not filename:  
+        return dash.no_update  
+    # Parse the upload as you do elsewhere:  
+    df = parse_contents(contents, filename)  
+    if df.empty:  
+        return dash.no_update  
+    # Try to pick the column to use for IDs:  
+    id_col = next((c for c in df.columns if 'id' in c.lower()), df.columns[0])  
+    ids = df[id_col].dropna().unique().tolist()  
+    # -- choose combinations (unordered, no repeats) or permutations (ordered, no repeats) --  
+    # Usually for record linkage: use unordered pairs.  
+    pair_rows = [{'ID1': a, 'ID2': b} for a, b in combinations(ids, 2)]  
+    out_df = pd.DataFrame(pair_rows)  
+    # Save as Excel in memory for download  
+    output = io.BytesIO()  
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:  
+        out_df.to_excel(writer, index=False, sheet_name='Pairs')  
+    output.seek(0)  
+    return dcc.send_bytes(output.getvalue(), 'pairs_table.xlsx') 
+
 @app.callback(  
     Output('pairs-uploaded', 'children'),  
     Output('lookup-uploaded', 'children'),  
@@ -184,9 +250,9 @@ def update_compare_columns_dropdown(lookup_content, lookup_name, sel_id, sel_met
     lookup_df = parse_contents(lookup_content, lookup_name)  
     if lookup_df.empty:  
         return [], []  
-    text_cols = lookup_df.select_dtypes(include=['object']).columns  
-    options = [{"label": c, "value": c} for c in text_cols]  
-    default_val = [sel_meta] if sel_meta in text_cols else []  
+    all_cols = lookup_df.columns  
+    options = [{"label": c, "value": c} for c in all_cols]    
+    default_val = [sel_meta] if sel_meta in all_cols else []  
     return options, default_val  
   
 @app.callback(  
@@ -229,6 +295,73 @@ def update_display_column_selector(_, id1_col, id2_col, sim_col, name_col, usage
         html.Br(),  
     ])  
   
+@app.callback(  
+    Output("download-xlsx", "data"),  
+    Input("export-btn", "n_clicks"),  
+    State('main-table', 'data'),  
+    State('main-table', 'columns'),  
+    State('compare-columns', 'value'),  
+    prevent_initial_call=True  
+)  
+def export_to_excel(n_clicks, data, columns, compare_cols):  
+    if not n_clicks or not data or not columns:  
+        return dash.no_update  
+  
+    # Step 1: Build DataFrame and save to Excel in memory with openpyxl  
+    df = pd.DataFrame(data)  
+    output = io.BytesIO()  
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:  
+        df.to_excel(writer, index=False, sheet_name="Merged")  
+    output.seek(0)  
+    wb = load_workbook(output)  
+    ws = wb["Merged"]  
+  
+    # Step 2: Bold headers  
+    header_font = Font(bold=True)  
+    for cell in ws[1]:  
+        cell.font = header_font  
+  
+    # Step 3: Adjust column widths automatically  
+    for col in ws.columns:  
+        max_length = 0  
+        col_letter = col[0].column_letter  
+        for cell in col:  
+            try:  
+                value = str(cell.value)  
+            except:  
+                value = ""  
+            if value:  
+                max_length = max(max_length, len(value))  
+        ws.column_dimensions[col_letter].width = max(max_length + 2, 12)  # leave a little padding  
+  
+    # Step 4: Color relevant columns  
+    color_map = {}  
+    if compare_cols:  
+        for col in compare_cols:  
+            color_map[f"{col} | Shared in both"] = "D6F5D6"  
+            color_map[f"{col} | Unique to ID 1"] = "FFFACD"  
+            color_map[f"{col} | Unique to ID 2"] = "FFD9EC"  
+  
+    # Openpyxl rows/columns are 1-indexed and include header row  
+    col_indices = {cell.value: cell.column for cell in ws[1]}  
+  
+    for col, fillcolor in color_map.items():  
+        if col not in col_indices:  
+            continue  
+        col_idx = col_indices[col]  
+        fill = PatternFill(start_color=fillcolor, end_color=fillcolor, fill_type="solid")  
+        # start from row 2 (data)  
+        for row in range(2, ws.max_row + 1):  
+            cell = ws.cell(row=row, column=col_idx)  
+            if cell.value is not None and str(cell.value).strip() != "":  
+                cell.fill = fill  
+  
+    # Save workbook to BytesIO for download  
+    final_output = io.BytesIO()  
+    wb.save(final_output)  
+    final_output.seek(0)  
+    return dcc.send_bytes(final_output.getvalue(), "merged_comparison.xlsx") 
+ 
 @app.callback(  
     Output('main-table', 'data'),  
     Output('main-table', 'columns'),  
@@ -289,6 +422,7 @@ def build_main_table(n_clicks, id1_col, id2_col, sim_col, lookup_id_col, name_co
         for col in compare_cols:  
             if col not in lookup_df.columns:  
                 continue  
+            col_is_numeric = pd.api.types.is_numeric_dtype(lookup_df[col])  # <<<< MODIFIED 
             id_to_attr = dict(zip(lookup_df[lookup_id_col], lookup_df[col]))  
             shared_list, uniq1_list, uniq2_list = [], [], []  
             for idx, row in merged.iterrows():  
@@ -296,8 +430,12 @@ def build_main_table(n_clicks, id1_col, id2_col, sim_col, lookup_id_col, name_co
                 id2 = row["ID_2"]  
                 meta1 = id_to_attr.get(id1, "")  
                 meta2 = id_to_attr.get(id2, "")  
-                set1 = parse_metadata_string(meta1)  
-                set2 = parse_metadata_string(meta2)  
+                if col_is_numeric:  # <<<< MODIFIED  
+                    set1 = set([str(meta1)]) if pd.notnull(meta1) and meta1 != "" else set()  
+                    set2 = set([str(meta2)]) if pd.notnull(meta2) and meta2 != "" else set()  
+                else:  
+                    set1 = parse_metadata_string(meta1)  
+                    set2 = parse_metadata_string(meta2)  
                 shared = sorted(set1 & set2)  
                 uniq1 = sorted(set1 - set2)  
                 uniq2 = sorted(set2 - set1)  
@@ -336,7 +474,14 @@ def build_main_table(n_clicks, id1_col, id2_col, sim_col, lookup_id_col, name_co
     final_cols = [col for col in display_cols if col in merged.columns]  
     if all_compare_cols:  
         final_cols += [col for col in all_compare_cols if col in merged.columns and col not in final_cols]  
-    columns = [{"name": col, "id": col} for col in final_cols]  
+    columns = []  
+    for col in final_cols:  
+        # Decide if this column should be shown as numeric  
+        # Get column values from merged DataFrame  
+        if pd.api.types.is_numeric_dtype(merged[col]):  
+            columns.append({"name": col, "id": col, "type": "numeric"})  
+        else:  
+            columns.append({"name": col, "id": col, "type": "text"})    
     data = merged[final_cols].to_dict('records')  
     return data, columns, style_data_conditional, []  
   
