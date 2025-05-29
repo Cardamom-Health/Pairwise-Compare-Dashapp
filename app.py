@@ -6,6 +6,10 @@ import dash_bootstrap_components as dbc
 from openpyxl import Workbook, load_workbook  
 from openpyxl.styles import PatternFill, Font  
 from itertools import combinations, permutations
+from dotenv import load_dotenv  
+  
+# Load environment variables  
+load_dotenv()  
   
 def parse_contents(contents, filename):  
     content_type, content_string = contents.split(',')  
